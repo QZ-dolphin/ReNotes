@@ -1,4 +1,16 @@
 # opencv
+## 预备知识
+0. 创建conda环境
+   ```batch
+   conda create -n 环境名 python=3.6
+   REM 创建python版本为3.6的 环境
+
+   activate myenv 
+   REM 进入创建的虚拟环境
+
+   REM 使用清华源下载包
+   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple 包名
+   ```
 1. 安装opencv包
    部分函数设计专利问题，如SIFT和SURF，所以需要使用opencv-python==3.4.1.15版本的，并且python需要3.6才能支持安装。
    ```batch
@@ -31,4 +43,24 @@
 
    # 销毁所有显示图像的窗口
    cv2.destoryAllWindows()
+   ```
+
+3. 保存图像
+   ```python
+   cv2.imwrite(保存的文件路径+文件名, image)
+   cv2.imwrite("D:/pics/1.jpg", image)
+   ```
+
+4. 图像属性
+   ```python
+   image.shape # 图像形状 像素行数（高）、像素列数（长）、通道数
+   image.size # 像素个数
+   image.dtype # 数据类型 uint8
+   ```
+
+## 第二章
+1. 通道
+   OpenCV读取的image通道为BGR顺序
+   ```python
+   print(image[100, 100])
    ```
