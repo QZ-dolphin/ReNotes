@@ -60,7 +60,64 @@
 
 ## 第二章
 1. 通道
+   
    OpenCV读取的image通道为BGR顺序
    ```python
    print(image[100, 100])
    ```
+---
+> 20240927
+2. 色彩空间
+   
+   GRAY色彩空间：灰度级[0, 255]，0纯黑，255纯白
+
+   HSV色彩空间：
+      - 色调[0, 180] 红色：0 黄色：30 绿色：60 蓝色 120
+      - 饱和度S [0, 255] 颜色深浅
+      - 亮度V [0, 255] 光的明暗
+  
+  色彩空间转换：
+  ```python
+  image1 = cv2.cvtColor(image0, code)
+  # image0 原图像 image1 转换后图像
+  # code 色彩空间转换码
+  ```
+  - cv2.COLOR_BGR2GRAY
+  - cv2.COLOR_RGB2GRAY  灰度图像无法转换为彩色图像，因为丢失了颜色比例
+  - cv2.COLOR_BGR2HSV
+  - cv2.COLOR_RGB2HSV
+
+3. 通道拆分
+   
+   > 拆分BGR图像
+   ```python
+   b, g, r = cv2.split(bgr_image)
+   h, s, v = cv2.split(hsv_image)
+   ```
+   其中b, g, r同样为图像数据，但通道值分别为[B, B, B] [G, G, G] [R, R, R]：都是灰度图像，亮度有所区别。
+
+   对于BGR图像，只要B=G=R，数值相等就是灰度图像。
+
+4. 合并通道
+
+   ```python
+   bgr_image = cv2.merge([b, g, r])
+   hsv_image = cv2.merge([h, s, v])
+   # 通道合并顺序不能变，否则得不到原图
+   ```
+5. 修改某一通道的值
+   ```python
+   b[:, :] = x # 将通道分量的所有值修改为x
+   ```
+6. 透明度alhpa通道
+   
+   [0, 255] 0：全透明，255：不透明
+   ```python
+   # 将bgr图像转换为bgra图像，再修改透明度a通道
+   bgra_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2BGRA)
+   b, g, r, a = cv2.split(bgra_image)
+   a[:, :] = 172 # 半透明
+   bgra_0 = cv2.merge([b, g, r, a])
+   cv2.imshow("A=172", bgra_0)
+   ```
+---
