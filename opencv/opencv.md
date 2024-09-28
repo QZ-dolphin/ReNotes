@@ -122,3 +122,35 @@
    cv2.imshow("A=172", bgra_0)
    ```
 ---
+> 20240929
+
+### Numpy 数组
+1. 创建一维和二维数组
+   
+   ```python
+   import numpy as np
+   n1 = np.array([0.1, 0.2, 0.3])
+   n2 = np.array([[1, 2, 3], [2, 3, 4]])
+   ```
+2. 指定数组的数据类型
+   
+   ```python
+   list = [1, 2, 3]
+   n3 = np.array(list, dtype=np.float64) # 或者 n3 = np.array(list, dtype=float)
+   print(n3)
+   print(n3.dtype)
+   print(type(n3))
+   ```   
+3. 创建3维数组
+   
+   ```python
+   list = [1, 2, 3]
+   n4 = np.array(list, ndmin=3)
+   print(n4)
+   ```   
+
+4. 创建未初始化数组
+   ```python
+   n5 = np.empty([2, 3]) # 里面数字代表维度，会取随机值，可用dtype指定类型
+   print(n5)
+   ``` 
