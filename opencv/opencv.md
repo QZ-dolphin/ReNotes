@@ -28,10 +28,11 @@
    ```python
    image = cv2.imread(filename, flags)
    # flags 默认为 1 ，读取彩色图像；0 读取为灰度图像
+   # filename如果为中文也会导致无法读取
    ```
 2. 显示图像
    ```python
-   cv2.show(winname, image)
+   cv2.imshow(winname, image)
    # winname 为显示图像的窗口名字符串，不能为中文，否则会乱码
    # image 读取的图像
    ```
