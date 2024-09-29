@@ -55,4 +55,6 @@ git clone git@github.com:QZ-dolphin/ReNotes.git
 先pull github中最新的文件，再编辑本地，再push。
 ```Bash
 git pull
+
+git push origin
 ```
