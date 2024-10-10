@@ -60,6 +60,7 @@
    ```
 
 ## 第二章
+### 通道基础
 1. 通道
    
    OpenCV读取的image通道为BGR顺序
@@ -154,3 +155,86 @@
    n5 = np.empty([2, 3]) # 里面数字代表维度，会取随机值，可用dtype指定类型
    print(n5)
    ``` 
+
+> 2024/10/11
+- 创建纯0数组
+```python
+n = np.zeros((3, 3), np.uint8)
+```
+
+- 创建纯1数组
+```python
+n = np.ones((3, 3), np.uint8)
+```
+
+- 复制数组
+```python
+# 方法 1
+n2 = np.array(n1, copy=True)
+# 方法 2
+n2 = n1.copy()
+```
+创建副本，修改副本不会影响原数组。
+
+- 索引方式
+```python
+n1 = np.array([[1, 2, 3], [2, 3, 4]])
+print(n1[1])
+print(n1[0, 1])
+```
+`n1[0, 1]`对比于`n1[0][1]`，后者是先索引一个维度得到一个数组，在在此基础上再索引。
+
+### 创建图像
+数组维度顺序：高、宽、通道
+```python
+width = 200
+height = 100
+# 创建单通道、像素值都为0的纯黑图像
+img = np.zeros((height, width), np.uint8)
+cv2.imshow("black", img)
+cv2.waitKey()
+cv2.destroyAllWindows()
+
+# 创建单通道、像素值都为255的纯白图像
+img = np.ones((height, width), np.uint8) * 255
+cv2.imshow("white", img)
+cv2.waitKey()
+cv2.destroyAllWindows()
+
+# 修改像素值
+img[25:75, 50:100] = 0
+cv2.imshow("pic1", img)
+cv2.waitKey()
+cv2.destroyAllWindows()
+
+
+def showpic(image, name="test.jpg"):
+    cv2.imshow(name, image)
+    cv2.waitKey()
+    cv2.destroyAllWindows()
+
+
+img = np.zeros((height, width), np.uint8)
+for i in range(0, width, 40):
+    img[:, i : i + 20] = 255
+showpic(img)
+
+# 创建纯蓝图像
+img = np.zeros((height, width, 3), np.uint8)
+blue = img.copy()
+blue[:, :, 0] = 255
+showpic(blue)
+
+# 创建随机彩色图像
+img = np.random.randint(256, size=(height, width, 3), dtype=np.uint8)
+showpic((img))
+```
+
+### 拼接图像
+拼接多个图像数组元组，数组形状需相同
+```python
+array1 = np.hstack(tup) # 水平拼接
+array2 = np.vstack(tup) # 垂直拼接
+```
+
+## 绘制图形
