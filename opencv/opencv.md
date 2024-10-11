@@ -238,3 +238,21 @@ array2 = np.vstack(tup) # 垂直拼接
 ```
 
 ## 绘制图形
+> 2024/10/12
+- 绘制直线
+  ```python
+   canvas = np.zeros((300, 300, 3), np.uint8)
+   canvas = cv2.line(canvas, (50, 50), (250, 50), (255, 0, 0), 5)
+   canvas = cv2.line(canvas, (50, 150), (250, 150), (0, 255, 0), 10)
+   canvas = cv2.line(canvas, (50, 250), (250, 250), (0, 0, 255), 15)
+   canvas = cv2.line(canvas, (150, 50), (150, 250), (0, 255, 255), 20)
+
+   showpic(canvas)
+  ```
+- 绘制矩形
+  ```python
+   canvas = np.ones((300, 300, 3), np.uint8) * 255
+   canvas = cv2.rectangle(canvas, (50, 50), (250, 250), (0, 0, 255), 40)
+   canvas = cv2.rectangle(canvas, (140, 140), (160, 160), (0, 255, 255), -1)
+   showpic(canvas)
+   ```
