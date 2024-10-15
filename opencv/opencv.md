@@ -256,3 +256,14 @@ array2 = np.vstack(tup) # 垂直拼接
    canvas = cv2.rectangle(canvas, (140, 140), (160, 160), (0, 255, 255), -1)
    showpic(canvas)
    ```
+
+## 第四章 阈值
+```python
+retval, dst = cv2.threshold(src, thresh, maxval, type)
+```
+阈值处理类型 type
+- cv2.THRESH_BINARY
+- cv2.THRESH_BINARY_INV
+- cv2.THRESH_TOZERO
+- cv2.THRESH_TOZERO_INV
+- cv2.THRESH_TRUNC
