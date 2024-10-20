@@ -27,6 +27,7 @@
 1. 读取图像
    ```python
    image = cv2.imread(filename, flags)
+   print(image.shape)   # image 的形状
    # flags 默认为 1 ，读取彩色图像；0 读取为灰度图像
    # filename如果为中文也会导致无法读取
    ```
@@ -267,3 +268,44 @@ retval, dst = cv2.threshold(src, thresh, maxval, type)
 - cv2.THRESH_TOZERO
 - cv2.THRESH_TOZERO_INV
 - cv2.THRESH_TRUNC
+
+## 第六章 图像运算
+ROI 感兴趣区域 region of interested
+
+### 图像相加
+- 两图像直接相加，超过255的则取模
+- 利用`cv2.add()`则超过255，同样取值255
+
+```python
+dst = cv2.add(img1, img2, mask, dtype)
+# mask 掩码，采用默认值，与相加的值逐位 与 操作
+# dtype 图像深度，采用默认值
+```
+### 图像位运算
+```python
+dst = cv2.bitwise_and(src1, src2, mask)
+# 图像与白色与仍为原图，与黑色与 为黑图
+
+dst = cv2.bitwise_or(src1, src2, mask)
+# 图像与白色或 为白图，与黑色或 为原图
+
+dst = cv2.bitwise_not(src, mask)
+# 图像取反，生成的不知道什么鬼东西
+
+dst = cv2.bitwise_xor(src, mask)
+# 与掩码进行异或操作，与白色异或，为原图取反，与黑色异或为原图
+```
+
+与同一掩码执行一次异或得到一个结果，执行两次，则还原为原来的值，可用于图像的加密和解密。
+
+生产随机图像作为密钥图像
+```python
+rows, cols, c = img.shape
+img_key = np.random.randint(0, 256, (rows, cols, c), np.uint8)
+```
+
+### 加权合并图像
+```python
+dst = cv2.addweighted(src1, a, src2, b, g)
+# a 权重1，b 权重2，g 生成的图片亮度标量，0，不变，正+负-
+```
