@@ -19,6 +19,15 @@
    pip install opencv-contrib-python==3.4.1.15
    REM 安装opencv的其他包
    ```
+   **更正：** 现在3.12版本的Python可以直接使用了，没有专利问题了。由此总结环境配置可直接如下所示：
+   ```batch
+   REM 配置镜像源
+
+
+   conda create -n gt python=3.12
+   pip install opencv-python
+   pip install opencv-contrib-python
+   ```
 2. 导入
    ```python
    import cv2

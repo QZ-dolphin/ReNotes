@@ -68,3 +68,10 @@ git push origin
 .\git_push.bat
 ```
 即可自动同步笔记。
+
+## 三、常用操作
+### 配置类
+#### 查看配置
+```batch
+git config --list
+```
