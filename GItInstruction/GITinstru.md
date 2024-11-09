@@ -74,4 +74,8 @@ git push origin
 #### 查看配置
 ```batch
 git config --list
+
+REM 查看全局配置
+git config --global user.name
+git config --global user.email
 ```
