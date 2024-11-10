@@ -1,0 +1,50 @@
+# mysql 在线安装(ubuntu版)
+## 安装
+```shell
+# 查看可使用的安装包
+sudo apt search mysql-server
+
+# 安装最新版本
+sudo apt install -y mysql-server
+# 安装指定版本
+sudo apt install -y mysql-server-8.0
+
+# 如果不加-y 会在安装过程中，系统将提示你设置MySQL的root密码。
+# 确保密码足够强，且记住它，因为你将在以后需要用到它。
+# 所以还是不加吧
+```
+## 启动服务
+安装完成后，MySQL服务会自动启动，未启动则使用以下命令启动MySQL服务
+```shell
+sudo systemctl start mysql
+```
+设置开机启动
+```shell
+sudo systemctl enable mysql
+```
+检查是否运行
+```shell
+sudo systemctl status mysql
+```
+## 修改密码、权限
+查看原始密码
+```shell
+sudo cat /etc/mysql/debian.cnf
+```
+修改密码
+```shell
+# 登录 mysql
+mysql -uroot -p
+# 输入原始密码
+# 设置密码 mysql8.0
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '新密码';
+```
+实现所有IP都能访问
+```shell
+sudo vim /etc/mysql/mysql.conf.d/mysqld.cnf
+```
+找到并修改 `bind-address            = 0.0.0.0`
+重启mysql
+```shell
+sudo systemctl restart mysql
+```
