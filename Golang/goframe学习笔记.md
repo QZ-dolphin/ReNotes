@@ -710,3 +710,459 @@ md := dao.Book.Ctx(req.Context())
 // SELECT * FROM `book` WHERE `delete_at` IS NULL
 ```
 则前后不会有关联
+
+## 空值处理
+用到`dao`与`entity`两个包
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Db(req *ghttp.Request) {
+	md := dao.Book.Ctx(req.Context())
+
+	book := entity.Book{
+		Author: "王强",
+		Price:  88.88,
+	}
+	// req.Response.WriteJsonExit(book) 查看book内容
+	// 更新完后，其他字段变成空`NULL`值。
+
+	result, err := md.Where("id", 16).Data(book).Update()
+
+	if err == nil {
+		req.Response.WriteJson(result)
+	} else {
+		req.Response.Writeln("发生错误：" + err.Error())
+	}
+}
+// 函数修改 将字段更新
+book := entity.Book{
+		Name: "Go语言从入门到精通",
+		Id:   25,
+	}
+result, err := md.Where("id", 0).Fields("id", "name").Data(book).Update()
+
+// 更新时忽略空值，即没有给出值的字段
+book := entity.Book{
+		Price: 65.55,
+	}
+result, err := md.OmitEmpty().Data(book).Update()
+
+// 使用do.Book，更新后其他字段不会变成空值
+book := do.Book{
+		Price: 66.66,
+	}
+result, err := md.Where(do.Book{Id: 25}).Data(book).Update() // 查询条件字段可以有多个
+```
+
+## 关联查询
+### 一对一
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Db(req *ghttp.Request) {
+	md := dao.Emp.Ctx(req.Context())
+
+	var emps []entity.Emp
+
+	err := md.With(entity.Dept{}).Scan(&emps) // With表示要关联Dept表，可以用,分隔多个关联的表
+
+	if err == nil {
+		req.Response.WriteJson(emps)
+	} else {
+		req.Response.Writeln("发生错误：" + err.Error())
+	}
+}
+```
+```go
+// internal/model/entity/emp.go
+type Emp struct {
+	Id     uint   `json:"id"      orm:"id"      ` // ID
+	DeptId uint   `json:"dept_id" orm:"dept_id" ` // 所属部门
+	Name   string `json:"name"    orm:"name"    ` // 姓名
+	Gender int    `json:"gender"  orm:"gender"  ` // 性别: 0=男 1=女
+	Phone  string `json:"phone"   orm:"phone"   ` // 联系电话
+	Email  string `json:"email"   orm:"email"   ` // 邮箱
+	Avatar string `json:"avatar"  orm:"avatar"  ` // 照片
+
+	Dept *Dept	`json:"dept" orm:"with:id=dept_id"` // 新增字段关联，让被关联的表中id=当前表中dept_id
+	// 可以增加多个关联字段
+}
+
+```
+### 一对多
+```go
+// internal/model/entity/dept.go
+type Dept struct {
+	Id     uint   `json:"id"     orm:"id"     ` // ID
+	Pid    uint   `json:"pid"    orm:"pid"    ` // 上级部门ID
+	Name   string `json:"name"   orm:"name"   ` // 部门名称
+	Leader string `json:"leader" orm:"leader" ` // 部门领导
+	Phone  string `json:"phone"  orm:"phone"  ` // 联系电话
+
+	Emps []Emp `json:"emps" orm:"with:dept_id=id"`
+}
+```
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Db(req *ghttp.Request) {
+	md := dao.Dept.Ctx(req.Context())
+
+	var depts []entity.Dept
+
+	err := md.With(entity.Emp{}, entity.Hobby{}).Scan(&depts) 
+	// 可以嵌套关联，但要防止无限循环套死
+
+	if err == nil {
+		req.Response.WriteJson(depts)
+	} else {
+		req.Response.Writeln("发生错误：" + err.Error())
+	}
+}
+```
+可自定义查询字段
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Db(req *ghttp.Request) {
+	type MyDept struct {
+		g.Meta `orm:"table:dept"` // 指定对应的表
+		Id     uint               `json:"id"`   // ID
+		Name   string             `json:"name"` // 部门名称
+	}
+
+	type MyEmp struct {
+		g.Meta `orm:"table:emp"`
+		Id     uint   `json:"id"`      // ID
+		DeptId uint   `json:"dept_id"` // 所属部门
+		Name   string `json:"name"`    // 姓名
+		Phone  string `json:"phone"`   // 联系电话
+
+		Dept *MyDept `orm:"with:id=dept_id" json:"dept"`
+	}
+
+	md := dao.Emp.Ctx(req.Context())
+
+	var emps []MyEmp
+
+	err := md.With(MyDept{}).Scan(&emps)
+
+	if err == nil {
+		req.Response.WriteJson(emps)
+	} else {
+		req.Response.Writeln("发生错误：" + err.Error())
+	}
+}
+```
+## service与logic目录使用
+差不多一个entity对应一个service
+
+service文件定义
+```go
+// internal/service/book.go
+package service
+
+import (
+	"context"
+	"demo/internal/model/do"
+	"demo/internal/model/entity"
+)
+
+// 1.定义接口
+type IBook interface {
+	GeList(ctx context.Context) (books []entity.Book, err error)
+	Add(ctx context.Context, book do.Book) (err error)
+	Edit(ctx context.Context, book do.Book) (err error)
+	Del(ctx context.Context) (err error)
+}
+
+// 2.定义接口变量
+var localBook IBook
+
+// 3.定义一个获取接口实例的函数
+func Book() IBook {
+	if localBook == nil {
+		panic("IBook接口未实现或未注册")
+	}
+	return localBook
+}
+
+// 4.定义一个接口实现的注册方法
+func RegisterBook(i IBook) {
+	localBook = i
+}
+
+```
+在logic中定义方法实现，在logic文件夹下习惯将每一个文件放在对应文件夹下。
+```go
+// internal/logic/book/book.go
+package book
+
+import (
+	"context"
+	"demo/internal/dao"
+	"demo/internal/model/do"
+	"demo/internal/model/entity"
+	"demo/internal/service"
+)
+
+type sBook struct {
+}
+
+// Add implements service.IBook.
+func (s *sBook) Add(ctx context.Context, book do.Book) (err error) {
+	panic("unimplemented")
+}
+
+// Del implements service.IBook.
+func (s *sBook) Del(ctx context.Context) (err error) {
+	panic("unimplemented")
+}
+
+// Edit implements service.IBook.
+func (s *sBook) Edit(ctx context.Context, book do.Book) (err error) {
+	panic("unimplemented")
+}
+
+// GeList implements service.IBook.
+func (s *sBook) GeList(ctx context.Context) (books []entity.Book, err error) {
+	err = dao.Book.Ctx(ctx).Scan(&books)
+	return
+}
+
+func init() {
+	service.RegisterBook(&sBook{})
+}
+```
+分别在`internal/logic/logic.go`文件与`main.go`文件中导入定义的包，以初始化
+```go
+// internal/logic/logic.go
+import (
+	_ "demo/internal/logic/book"
+)
+```
+```go
+// main.go
+import (
+	_ "demo/internal/logic"
+)
+```
+## 模板输出
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Tpl(req *ghttp.Request) {
+	data := g.Map{
+		"name":   "王也道长",
+		"lesson": "GoFrame入门课程",
+		"num":    5,
+		"what":   "模板引擎使用示例",
+	}
+
+	req.Response.WriteTpl("hello/index.html", data)
+	// 第一个参数为文件路径
+}
+```
+html文件存放于`resource/template/hello/index.html`
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+
+    <div>
+        <h1>你好， {{.name}}</h1>
+        <h2>欢迎来到{{.lesson}}的学习课程</h2>
+        <p>本课程共{{.num}}小节，现在学习的是{{.what}}</p >
+    </div>
+
+</body>
+</html>
+```
+对应的替换内容的格式为`{{.名称}}`
+
+## 模板条件判断与循环
+在html文件中可写入
+```html
+{{if .condition}}
+条件满足时显示内容
+{{else}}
+条件不满足时显示内容
+{{end}}
+```
+可以嵌套写，也可以写多个`{{else if .condition}}`
+
+当`.condition`为空值，即0、""、nil这类值时，条件判断为假，其他值均为真（条件满足）。
+
+大小判断用`eq nq lt le gt ge`
+如`{{if eq .num 200}}`等价于`if .num==200`
+注意判断关键字在两个值之前。
+
+逻辑判断`and or not`，嵌套判断用括号隔离
+
+### 循环
+`range ... end`
+对于数组变量`.slice`
+两种方式：
+```html
+{{range .slice}}
+<span>{{.}}</span>  
+<!-- .用于输出简单类型变量 -->
+{{end}}
+
+
+{{range $index, $value := .slice}}
+<p>index = {{$index}}, value = {{$value}}</p >
+{{end}}
+```
+## 模板其他内容
+将`css js image`等资源放置于`resource/public/resource/`下的对应文件夹。
+
+开启静态文件服务，于`cmd/cmd.go`中添加`s.SetServerRoot("resource/public")`
+或者用配置开启，于`manifest/config/config.yaml`中的`server: serverRoot:`添加路径。
+
+## 文件上传
+`public/html/form.html`
+```html
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Document</title>
+    </head>
+    <body>
+        <form action="/upload" method="POST" enctype="multipart/form-data">
+            <input type="file" name="ufile" id="">
+            <input type="submit" text="提交">
+        </form>
+    </body>
+</html>
+```
+
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Upload(req *ghttp.Request) {
+	file := req.GetUploadFile("ufile")
+	if file != nil {
+		file.Filename = "111.png"                            
+		// 自定义保存的文件名
+		filename, err := file.Save("resource/public/upload") 
+		// 自定义存放的路径
+		if err == nil {
+			req.Response.Writeln("upload"+filename)
+		}
+	}
+}
+```
+### 获取多文件
+修改html中
+```html
+<input type="file" name="ufiles" id="" multiple>
+```
+
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Upload(req *ghttp.Request) {
+	files := req.GetUploadFiles("ufiles")
+	if files != nil {
+		filenames, err := files.Save("resource/public/upload")
+		if err == nil {
+			req.Response.Writeln(filenames)
+		}
+	}
+}
+```
+### 修改文件大小限制
+于`manifest/config/config.yaml`中修改`server:clientMaxBodySize:`
+`0`为无限制
+
+## 文件下载
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Download(req *ghttp.Request) {
+	req.Response.ServeFile("/resource/public/upload/111.png")
+}
+// 图片、文本等可显示文件会显示在浏览器中，其他则download下来，文件名为download
+
+req.Response.ServeFileDownload("/resource/public/upload/111.png")
+// 直接将文件下载，可加第二个可选参数，为下载保存的文件名
+```
+## Cookie和Session
+Cookie是保存在浏览器的一些数据，在请求的时候会放在请求头当中一同发送，通常用来保存sessionid、token等一些数据。
+
+Session机制用于判断请求由哪一用户发起，Session数据保存在服务器。
+以前常用于保存登录数据，进行登录验证，不过现在只是有些比较小的，前后端不分离的项目还在使用。
+## 数据校验
+```go
+// api/hello/hello.go
+type ValidReq struct {
+	g.Meta `method:"all"`
+
+	UserName string `p:"user_name" v:"required#user_name不能为空"`
+	// v用于验证，required必填，#后加提示信息
+	Password string `p:"password"`
+	Age      int    `p:"age" v:"required|integer|min:0#age不能为空|age必须是整数|age不能小于0"`
+	// 验证规则用|隔开，提示信息对应，用|隔开
+}
+
+type ValidRes struct {
+}
+```
+
+```go
+// internal/controller/hello/hello.go
+func (c *Hello) Valid(ctx context.Context, req *hello.ValidReq) (res *hello.ValidRes, err error) {
+	return
+}
+```
+## 时间与随机工具
+当前时间
+```go
+t := gtime.Now()
+t := gtime.Date()
+t := gtime.Datetime()
+```
+
+## 中间件
+```go
+// 注册中间件，对路由组进行注册，可注册多个
+group.Middleware(service.Middleware().Auth)
+```
+Auth中间件在`internal/service/middleware.go`中
+具体实现在`internal/logic/middleware/middleware.go`中
+
+`r.Middleware.Next()`功能为路由放行
+在`r.Middleware.Next()`前面的称为`前置中间件`,用于拦截请求
+放在后面的为`后置中间件`，用于拦截响应
+
+## 接口文档
+生成的地址`http://127.0.0.1:8000/swagger/`，接口文档的页面，写在`api`中的文件。
+
+可自定义接口文档页面，于`resource/template/apidoc.html`中
+
+## 构建打包
+在`hack/config.yaml`文档中
+```yaml
+gfcli:
+  build:
+    name: "hellogf"
+    arch: "amd64"
+    system: "linux,darwin,windows"
+    mode: "none"
+    cgo: 0
+    packSrc: "manifest/config,resource/public,resource/template"
+    version: "1.0.0"
+    output: "./bin"
+    extra: ""
+```
+- name：打包后的可执行文件名
+- arch：系统架构，可以有多个，用,分隔，用all表示编译所有支持的架构
+- system：编译平台，可以有多个，用,分隔，用all表示编译所有支持的系统
+- packSrc：需要打包的静态资源目录
+- version：版本号
+
+打包
+```shell
+gf build
+```
+以上操作会把指定的目录一起打包进可执行文件。通常情况例如配置文件等一些需要改动的文件不用打包进可执行文件。
