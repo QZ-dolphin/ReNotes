@@ -48,3 +48,15 @@ sudo vim /etc/mysql/mysql.conf.d/mysqld.cnf
 ```shell
 sudo systemctl restart mysql
 ```
+
+## 远程连接报错
+> 连接失败！null, message from server: “Host ‘xxxx‘ is not allowed to connect to this MySQL server“
+
+解决方法：
+连接数据库，这里以默认用户名密码为例
+1. mysql -uroot -p密码
+2. show databases;
+3. use mysql;
+4. select user,host from user;//可以看到user为root，host为localhost的话，说明mysql只允许本机连接，那么外网，本地软件客户端就无法连接了。
+5. update user set host='%' where user='root';
+6. flush privileges;//刷新权限
