@@ -79,3 +79,20 @@ REM 查看全局配置
 git config --global user.name
 git config --global user.email
 ```
+…or create a new repository on the command line
+```batch
+echo "# DLearning" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin git@github.com:QZ-dolphin/DLearning.git
+git push -u origin main
+```
+
+…or push an existing repository from the command line
+```batch
+git remote add origin git@github.com:QZ-dolphin/DLearning.git
+git branch -M main
+git push -u origin main
+```
