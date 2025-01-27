@@ -19,6 +19,35 @@
    pip install opencv-contrib-python==3.4.1.15
    REM 安装opencv的其他包
    ```
+   **更正：** 现在3.12版本的Python可以直接使用了，没有专利问题了。由此总结环境配置可直接如下所示：
+   ```batch
+   REM 配置镜像源 配置conda镜像源：
+   conda config --show channels
+   REM 显示镜像源
+   conda config --remove-key channels
+   REM 删除镜像源
+
+   REM 添加镜像源
+   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r
+   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/pro
+   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2
+
+   REM 终端显示包从哪个channel下载，以及下载地址是什么
+   conda config --set show_channel_urls yes
+   REM some-package代表你需要安装的包
+
+   REM pip 镜像源下载
+   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple some-package
+
+   REM 设置pip镜像源
+   pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+   conda create -n gt python=3.12
+   pip install opencv-python
+   pip install opencv-contrib-python
+   ```
 2. 导入
    ```python
    import cv2
