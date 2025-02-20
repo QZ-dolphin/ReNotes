@@ -26,3 +26,19 @@ docker --version
 - 验证更改： 你可以通过运行以下命令来验证你的用户是否已成功添加到 docker 用户组：
 ```groups```
 你应该会看到 docker 组在输出中。
+
+## 镜像加速
+```shell
+vim /etc/docker/daemon.json
+```
+```
+{
+  "registry-mirrors": [
+        "https://docker.urlsa.us.kg",
+        "https://hub.haod.eu.org"
+  ]
+}
+```
+```shell
+systemctl daemon-reload && systemctl restart docker 
+```

@@ -72,7 +72,7 @@ git push origin
 ## 三、常用操作
 ### 配置类
 #### 查看配置
-```batch
+```sh
 git config --list
 
 REM 查看全局配置
@@ -91,8 +91,11 @@ git push -u origin main
 ```
 
 …or push an existing repository from the command line
-```batch
+```sh
 git remote add origin git@github.com:QZ-dolphin/DLearning.git
 git branch -M main
 git push -u origin main
+
+# 移除文件不提交，在.gitignore中添加后，执行
+git rm --cached .env.production
 ```
