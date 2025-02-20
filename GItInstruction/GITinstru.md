@@ -5,6 +5,8 @@
 ## 二、步骤
 ### 1、下载软件
 https://git=scm.com/downloads/win
+需要用梯子下载 Standalone Installer版本
+
 需要用梯子下载
 ### 2、创建 ssh key
 在⽤户主目录下，看看有没有`.ssh`目录，如果有，再看看这个目录下 有没有id_rsa和id_rsa.pub这两个⽂件，如果已经有了，可直接跳到下⼀步。如果没有，打开Shell（Windows下打开Git Bash），创建SSH Key：
