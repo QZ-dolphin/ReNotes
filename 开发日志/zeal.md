@@ -22,75 +22,8 @@ gf init zeal_be
 rm -rf api/hello/
 rm -rf internal/controller/hello/
 ```
-## 创建跨域中间件
-在后端项目中，跨域（Cross-Origin）指的是浏览器出于安全考虑，限制从一个源加载的文档或脚本如何与来自另一个源的资源进行交互。这里的“源”指的就是协议、域名和端口的组合。例如，一个源可以是`http://example.com:8080`，而另一个源可以是`http://api.example.com:8080`或`https://example.com:8080`。
 
-当你的前端应用运行在`http://example.com:3000`，而它尝试通过AJAX请求与`http://api.example.com:8080`进行通信时，这就会被认为是跨域请求。浏览器默认会阻止这种请求，除非后端服务器明确允许这种跨域请求。
-
-跨域中间件的作用就是配置服务器以允许特定的跨域请求。这通常包括设置响应头，如Access-Control-Allow-Origin、Access-Control-Allow-Methods、Access-Control-Allow-Headers等，来告诉浏览器哪些源可以访问该资源，以及允许使用的HTTP方法和请求头等。
-```bash
-mkdir -p internal/logic/middleware
-```
-后续创建文件夹步骤部分内容省略，体现在代码文件注释中。
-```go
-// internal/logic/middleware/middleware.go
-
-package middleware
-
-import "github.com/gogf/gf/v2/net/ghttp"
-
-type sMiddleware struct{}
-
-func New() *sMiddleware {
-	return &sMiddleware{}
-}
-
-func (s *sMiddleware) CORS(r *ghttp.Request) {
-	r.Response.CORSDefault()
-	r.Middleware.Next()
-}
-```
-创建service
-```bash
-gf gen service
-```
-并修改middleware.go文件如下
-```go
-// internal/logic/middleware/middleware.go
-
-package middleware
-
-import (
-	"zeal_be/internal/service"
-
-	"github.com/gogf/gf/v2/net/ghttp"
-)
-
-type sMiddleware struct{}
-
-func init() {
-	service.RegisterMiddleware(New())
-} // 用于服务初始化注册
-
-func New() service.IMiddleware {
-	return &sMiddleware{}
-}
-
-func (s *sMiddleware) CORS(r *ghttp.Request) {
-	r.Response.CORSDefault()
-	r.Middleware.Next()
-}
-```
-后续只给出最终的logic代码文件，省略生成service与修改logic代码文件的步骤。
-
-添加至cmd.go文件中
-```go
-// internal/cmd/cmd.go
-s := g.Server() // 该行以上代码省略
-s.Use(service.Middleware().CORS) // 添加该行，以全局使用跨域中间件，也可更细粒度配置
-// ...
-```
-## mysql配置
+### 数据库搭建
 **1、安装MySql库**
 ```bash
 go get "github.com/gogf/gf/contrib/drivers/mysql/v2"
@@ -165,6 +98,176 @@ CREATE TABLE userdata (
 ```bash
 gf gen dao
 ```
+
+导出数据库对应表结构
+```sh
+mysqldump -uusername -ppassword -h hostname --no-data database_name table_name > output_file.sql
+
+mysqldump -uroot -p123dqz -h 192.168.56.102 --no-data zeal_be userdata > userdata.sql
+mysqldump -uroot -p123dqz -h 192.168.56.102 --no-data zeal_be userprivilege > userprivilege.sql
+
+mysql -u your_username -p -h your_host -P your_port -D your_database < output_file.sql
+```
+
+```sql
+CREATE TABLE `userdata` (
+  `user_id` int NOT NULL AUTO_INCREMENT,
+  `user_name` varchar(255) NOT NULL,
+  `password` varchar(255) NOT NULL,
+  `email_address` varchar(255) DEFAULT NULL,
+  `ip_address` json DEFAULT NULL,
+  `avatar_url` varchar(255) DEFAULT NULL,
+  `created_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_login_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `day_name` varchar(50) DEFAULT NULL,
+  `day_value` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `userprivilege` (
+  `user_id` int NOT NULL AUTO_INCREMENT,
+  `email_address` varchar(255) NOT NULL,
+  `privilege` json DEFAULT NULL,
+  PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+```yaml
+# hack/config.yaml
+gfcli:
+  docker:
+    build: "-a amd64 -s linux -p temp -ew"
+    tagPrefixes:
+    - my.image.pub/my-app
+
+  gen:
+    dao:
+    - link: "mysql:root:123dqz@tcp(192.168.56.101:3306)/zeal_be?loc=Local&parseTime=true"
+      tables: "userdata, userprivilege" # 指定当前数据库中需要执行代码生成的数据表。如果为空，表示数据库的所有表都会生成。
+      debug: true
+      jsonCase: "CamelLower" # JSON字段命名方式，如CamelLower、SnakeLower等
+```
+
+```yaml
+# manifest/config.yaml
+database:
+  default:
+  - link: "mysql:root:123dqz@tcp(192.168.56.102:3306)/zeal_be?loc=Local&parseTime=true"
+    debug: false
+```
+## 中间件
+### Auth
+```go
+// /internal/logic/middleware/auth.go
+package middleware
+
+import (
+	"strings"
+
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/net/ghttp"
+	"github.com/gogf/gf/v2/os/gctx"
+	"github.com/golang-jwt/jwt/v5"
+)
+
+func (s *sMiddleware) Auth(r *ghttp.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		r.Response.WriteStatusExit(401)
+	}
+	ctx := gctx.New()
+	jwt_key, _ := g.Cfg().Get(ctx, "jwt-secret")
+
+	// 提取Token
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		return []byte(jwt_key.String()), nil
+	})
+
+	// 验证Token
+	if err != nil || !token.Valid {
+		r.Response.WriteStatusExit(401)
+	}
+
+	// 存储用户邮箱信息到上下文
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		r.SetCtxVar("Email", claims["email"])
+	} else {
+		r.Response.WriteStatusExit(401)
+	}
+
+	r.Middleware.Next()
+}
+```
+### 跨域中间件CORS
+在后端项目中，跨域（Cross-Origin）指的是浏览器出于安全考虑，限制从一个源加载的文档或脚本如何与来自另一个源的资源进行交互。这里的“源”指的就是协议、域名和端口的组合。例如，一个源可以是`http://example.com:8080`，而另一个源可以是`http://api.example.com:8080`或`https://example.com:8080`。
+
+当你的前端应用运行在`http://example.com:3000`，而它尝试通过AJAX请求与`http://api.example.com:8080`进行通信时，这就会被认为是跨域请求。浏览器默认会阻止这种请求，除非后端服务器明确允许这种跨域请求。
+
+跨域中间件的作用就是配置服务器以允许特定的跨域请求。这通常包括设置响应头，如Access-Control-Allow-Origin、Access-Control-Allow-Methods、Access-Control-Allow-Headers等，来告诉浏览器哪些源可以访问该资源，以及允许使用的HTTP方法和请求头等。
+```bash
+mkdir -p internal/logic/middleware
+```
+后续创建文件夹步骤部分内容省略，体现在代码文件注释中。
+```go
+// internal/logic/middleware/middleware.go
+
+package middleware
+
+import "github.com/gogf/gf/v2/net/ghttp"
+
+type sMiddleware struct{}
+
+func New() *sMiddleware {
+	return &sMiddleware{}
+}
+
+func (s *sMiddleware) CORS(r *ghttp.Request) {
+	r.Response.CORSDefault()
+	r.Middleware.Next()
+}
+```
+创建service
+```bash
+gf gen service
+```
+并修改middleware.go文件如下
+```go
+// internal/logic/middleware/middleware.go
+
+package middleware
+
+import (
+	"zeal_be/internal/service"
+
+	"github.com/gogf/gf/v2/net/ghttp"
+)
+
+type sMiddleware struct{}
+
+func init() {
+	service.RegisterMiddleware(New())
+} // 用于服务初始化注册
+
+func New() service.IMiddleware {
+	return &sMiddleware{}
+}
+
+func (s *sMiddleware) CORS(r *ghttp.Request) {
+	r.Response.CORSDefault()
+	r.Middleware.Next()
+}
+```
+后续只给出最终的logic代码文件，省略生成service与修改logic代码文件的步骤。
+
+添加至cmd.go文件中
+```go
+// internal/cmd/cmd.go
+s := g.Server() // 该行以上代码省略
+s.Use(service.Middleware().CORS) // 添加该行，以全局使用跨域中间件，也可更细粒度配置
+// ...
+```
+
 ## 添加utility log工具
 方便定位输出log的代码在文件中的位置。
 ```go
@@ -183,15 +286,267 @@ func Clog(v ...interface{}) {
 ```
 
 
-## 通用工具文件
+## 通用工具
 ```sh
 zeal_be/utility/
 ├── cyptTool.go
 ├── fileTool.go
 ├── logTool.go
 ├── mongoTool.go
-└── randCodes.go
+└── randCodesTool.go
 ```
+### cyptTool
+```go
+// cyptTool.go
+package utility
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"os"
+
+	"github.com/tjfoc/gmsm/sm2"
+	"github.com/tjfoc/gmsm/x509"
+)
+
+type GMCrypt struct {
+	PublicFile  string
+	PrivateFile string
+}
+
+var (
+	path        = "./"             // 秘钥存储位置
+	privateFile = "sm2private.pem" // 私钥文件名
+	publicFile  = "sm2public.pem"  // 公钥文件名
+)
+
+var Crypt = GMCrypt{
+	PublicFile:  path + publicFile,
+	PrivateFile: path + privateFile,
+}
+
+// 生成公钥、私钥
+func GenerateSM2Key() {
+	// 生成私钥、公钥
+	priKey, err := sm2.GenerateKey(rand.Reader) // rand.Reader 用于提供加密安全的随机数生成器
+	if err != nil {
+		fmt.Println("秘钥产生失败：", err)
+		os.Exit(1)
+	}
+	pubKey := &priKey.PublicKey
+	// 生成文件 保存私钥、公钥
+	// x509 编码
+	pemPrivKey, _ := x509.WritePrivateKeyToPem(priKey, nil)
+	privateFile, _ := os.Create(path + privateFile)
+	defer privateFile.Close()
+	privateFile.Write(pemPrivKey)
+	pemPublicKey, _ := x509.WritePublicKeyToPem(pubKey)
+	publicFile, _ := os.Create(path + publicFile)
+	defer publicFile.Close()
+	publicFile.Write(pemPublicKey)
+}
+
+// 读取密钥文件
+func readPemCxt(path string) ([]byte, error) {
+	// 判断文件是否存在
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		Clog("文件不存在")
+		GenerateSM2Key()
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return []byte{}, err
+	}
+	defer file.Close()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return []byte{}, err
+	}
+	buf := make([]byte, fileInfo.Size())
+	_, err = file.Read(buf)
+	if err != nil {
+		return []byte{}, err
+	}
+	return buf, err
+}
+
+// 加密
+func (s *GMCrypt) Encrypt(data string) (string, error) {
+	pub, err := readPemCxt(s.PublicFile)
+	if err != nil {
+		return "", err
+	}
+	// read public key
+	publicKeyFromPem, err := x509.ReadPublicKeyFromPem(pub)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	ciphertxt, err := publicKeyFromPem.EncryptAsn1([]byte(data), rand.Reader)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(ciphertxt), nil
+}
+
+// 解密
+func (s *GMCrypt) Decrypt(data string) (string, error) {
+	pri, err := readPemCxt(s.PrivateFile)
+	if err != nil {
+		return "", err
+	}
+	privateKeyFromPem, err := x509.ReadPrivateKeyFromPem(pri, nil)
+	if err != nil {
+		return "", err
+	}
+	ciphertxt, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "", err
+	}
+	plaintxt, err := privateKeyFromPem.DecryptAsn1(ciphertxt)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintxt), nil
+}
+```
+### fileTool
+```go
+// fileTool.go
+package utility
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+func ClearDir(dirPath string) error {
+	// 打开目录
+	dir, err := os.Open(dirPath)
+	if err != nil {
+		return fmt.Errorf("failed to open directory: %w", err)
+	}
+	defer dir.Close()
+
+	// 读取目录内容
+	files, err := dir.Readdirnames(-1)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	// 遍历目录中的每个文件，并删除它
+	for _, file := range files {
+		filePath := filepath.Join(dirPath, file)
+		info, err := os.Lstat(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to get file info: %w", err)
+		}
+
+		if info.IsDir() {
+			// 如果是目录，可以跳过或选择递归删除（如果需要的话）
+			continue
+		}
+
+		// 删除文件
+		if err := os.Remove(filePath); err != nil {
+			return fmt.Errorf("failed to remove file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func DirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
+}
+```
+
+### mongoTool
+```go
+package utility
+
+import (
+	"sync"
+
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gctx"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type MongoConfig struct {
+	Address  string // MongoDB server address in URI format
+	Database string // Target database name
+}
+
+var (
+	mongoClient *mongo.Client
+	once        sync.Once
+)
+
+func NewMongoClient() (*mongo.Client, error) {
+	var err error
+	once.Do(func() {
+		var (
+			ctx    = gctx.GetInitCtx()
+			config *MongoConfig
+		)
+		// Load MongoDB configuration from config.yaml
+		err = g.Cfg().MustGet(ctx, "mongo").Scan(&config)
+		if err != nil {
+			return
+		}
+		if config == nil {
+			err = gerror.New("mongo config not found")
+			return
+		}
+		g.Log().Debugf(ctx, "Mongo Config: %s", config)
+
+		// Initialize MongoDB client with the loaded configuration
+		clientOptions := options.Client().ApplyURI(config.Address)
+		mongoClient, err = mongo.Connect(ctx, clientOptions)
+	})
+	return mongoClient, err
+}
+```
+### randCodesTool
+```go
+// randCodesTool.go
+package utility
+
+import (
+	"crypto/rand"
+)
+
+func GenerateVerificationCode(length int) string {
+	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := make([]byte, length)
+	_, err := rand.Read(b)
+	if err != nil {
+		Clog(err)
+	}
+
+	for i := range b {
+		b[i] = charset[b[i]%byte(len(charset))]
+	}
+	return string(b)
+}
+```
+
 ## API
 ### admin
 ```sh
@@ -284,6 +639,107 @@ type UpdateUserPrivsRes struct {
 	Privs []string `json:"privs_list"`
 }
 ```
+#### logic
+```go
+// /internal/logic/admin/admin.go
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	v1 "zeal_be/api/admin/v1"
+	"zeal_be/internal/consts"
+	"zeal_be/internal/dao"
+	"zeal_be/internal/service"
+	"zeal_be/utility"
+
+	"github.com/gogf/gf/v2/frame/g"
+)
+
+type sAdmin struct{}
+
+func init() {
+	service.RegisterAdmin(New())
+}
+
+func New() service.IAdmin {
+	return &sAdmin{}
+}
+
+func (s *sAdmin) CheckAdmin(ctx context.Context) int {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	md := dao.Userprivilege.Ctx(ctx)
+	var privilege = struct {
+		Privilege string `json:"privilege"`
+	}{}
+	md.Where("email_address", user_email).Fields("privilege").Scan(&privilege)
+	var P []string
+	json.Unmarshal([]byte(privilege.Privilege), &P)
+	if len(P) == 0 {
+		return consts.UserNoPrivilege
+	}
+	for _, p := range P {
+		if p == "admin" {
+			return 0
+		}
+	}
+	return consts.UserNoPrivilege
+}
+
+func (s *sAdmin) GetUserList(ctx context.Context, in v1.ULReqInfo) (stat int, userList []v1.UserInfo, count int) {
+	stat = s.CheckAdmin(ctx)
+	if stat == consts.UserNoPrivilege {
+		return
+	}
+	md := dao.Userdata.Ctx(ctx)
+	if in.Order == "desc" {
+		md = md.OrderDesc(in.OrderItem)
+	} else if in.Order == "asc" {
+		md = md.OrderAsc(in.OrderItem)
+	}
+
+	c := make(chan int, 1)
+	defer close(c)
+	if in.NeedCount == 1 {
+		go func() {
+			num, _ := md.Count()
+			c <- num
+		}()
+	}
+
+	md = md.Page(in.PageIndex, in.PageSize).Fields("user_id")
+	g.Model("userdata as a,? as b", md).Fields("a.*").Where("b.user_id = a.user_id").Scan(&userList)
+
+	for i := range userList {
+		userList[i].Password, _ = utility.Crypt.Decrypt(userList[i].Password)
+		if len(userList[i].Avatar_url) != 0 {
+			userList[i].Avatar_url = g.Cfg().MustGet(ctx, "base_url").String() + userList[i].Avatar_url
+		}
+	}
+	if in.NeedCount == 1 {
+		count = <-c
+	}
+	return
+}
+
+func (s *sAdmin) GetUserPrivs(ctx context.Context, t_email string) (privs []string) {
+	md := dao.Userprivilege.Ctx(ctx)
+	var privilege = struct {
+		Privilege string `json:"privilege"`
+	}{}
+	md.Where("email_address", t_email).Fields("privilege").Scan(&privilege)
+	json.Unmarshal([]byte(privilege.Privilege), &privs)
+	return
+
+}
+
+func (s *sAdmin) UpdateUserPrivs(ctx context.Context, t_email string, privs []string) {
+	privilegeJSON, _ := json.Marshal(privs)
+	dao.Userprivilege.Ctx(ctx).Where("email_address", t_email).Data("privilege", privilegeJSON).Update()
+}
+```
+
 # 实时通讯系统
 
 ## golang如何实现单例
@@ -423,3 +879,6 @@ func GetInstance() *Singleton {
 - 文件顺序：如果一个包中有多个文件，并且每个文件都有init函数，那么这些init函数的执行顺序与文件的导入顺序无关，而是与文件的编译顺序有关。
 - 多包导入：如果一个程序导入了多个包，每个包的init函数会按照导入包的顺序依次执行。
 - 避免循环导入：由于init函数的自动调用特性，需要注意避免循环导入问题，否则会导致编译错误。
+
+
+
