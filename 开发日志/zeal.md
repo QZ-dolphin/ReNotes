@@ -739,7 +739,162 @@ func (s *sAdmin) UpdateUserPrivs(ctx context.Context, t_email string, privs []st
 	dao.Userprivilege.Ctx(ctx).Where("email_address", t_email).Data("privilege", privilegeJSON).Update()
 }
 ```
+#### controller
+```go
+// admin_v1_get_self_privs.go
+	r := g.RequestFromCtx(ctx)
+	email := r.GetCtxVar("Email").String()
+	res = &v1.GetSelfPrivsRes{}
+	res.Privs = service.Admin().GetUserPrivs(ctx, email)
+	return
+```
 
+```go
+// admin_v1_get_user_privs.go
+	stat := service.Admin().CheckAdmin(ctx)
+	if stat == consts.UserNoPrivilege {
+		r := g.RequestFromCtx(ctx)
+		r.Response.WriteStatusExit(404)
+	}
+	res = &v1.GetUserPrivsRes{}
+	res.Privs = service.Admin().GetUserPrivs(ctx, req.T_email)
+	return
+```
+
+```go
+// admin_v1_update_user_privs.go
+	stat := service.Admin().CheckAdmin(ctx)
+	if stat == consts.UserNoPrivilege {
+		r := g.RequestFromCtx(ctx)
+		r.Response.WriteStatusExit(404)
+	}
+	service.Admin().UpdateUserPrivs(ctx, req.T_email, req.Privs)
+	res = &v1.UpdateUserPrivsRes{}
+	res.Privs = service.Admin().GetUserPrivs(ctx, req.T_email)
+	return
+```
+
+```go
+// admin_v1_user_list.go
+	var stat int
+	res = &v1.UserListRes{}
+	stat, res.UserList, res.Count_num = service.Admin().GetUserList(ctx, req.ReqInfo)
+	if stat == consts.UserNoPrivilege {
+		r := g.RequestFromCtx(ctx)
+		r.Response.WriteStatusExit(404)
+	}
+	return
+```
+
+### system
+```sh
+zeal_be/api/system/v1/
+├── get_authcode.go
+├── get_emailcode.go
+├── login.go
+├── register.go
+└── update_password.go
+```
+
+```go
+// get_authcode.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetAuthCodeReq struct {
+	g.Meta `path:"/sys/get_authcode" method:"get"`
+}
+type GetAuthCodeRes struct {
+	Key    string `json:"key"`
+	Img    string `json:"img"`
+}
+```
+
+```go
+// get_emailcode.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetEmailCodeReq struct {
+	g.Meta  `path:"/sys/get_emailcode" method:"post"`
+	ToEmail string `json:"toemail" v:"email#Email格式错误"`
+}
+
+type GetEmailCodeRes struct {
+	TTL  int64 `json:"ttl"` // 验证码有效时间，单位秒
+	Send bool  `json:"send"`
+}
+```
+
+```go
+// login.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type LoginReq struct {
+	g.Meta   `path:"/sys/login" method:"post"`
+	Email    string `p:"email" v:"required#邮箱不能为空"`
+	Password string `p:"password" v:"required#密码不能为空"`
+	// VerifyKey  string `p:"verifyKey" v:"required#验证码不能为空"`
+	// VerifyCode string `p:"verifyCode"`
+}
+
+type LoginRes struct {
+	Token string `json:"token"`
+}
+```
+
+```go
+// register.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type RegisterReq struct {
+	g.Meta    `path:"/sys/register" method:"post"`
+	NickName  string `p:"nickname" v:"required#昵称不能为空"`
+	Email     string `p:"email" v:"required#邮箱不能为空"`
+	Password  string `p:"password" v:"required#密码不能为空"`
+	EmailCode string `p:"emailCode" v:"required#验证码不能为空"`
+}
+
+type RegisterRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+```go
+// update_password.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type UpdatePwdReq struct {
+	g.Meta     `path:"/sys/update_pwd" method:"post"`
+	Email      string `p:"email"`
+	VerifyCode string `p:"verify_code"`
+	NewPwd     string `p:"new_pwd"`
+}
+
+type UpdatePwdRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+## consts
+```go
+package consts
+
+var (
+	UserNotExist      = 1
+	UserFalsePassword = 2
+	UserAlreadyExist  = 3
+	UserNoPrivilege   = 4
+)
+```
 # 实时通讯系统
 
 ## golang如何实现单例
@@ -800,7 +955,7 @@ import (
     "sync"
     "sync/atomic"
 )
-
+z
 type Singleton struct {
     // 单例对象的属性
     data string
