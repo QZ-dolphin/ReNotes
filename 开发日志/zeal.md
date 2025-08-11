@@ -883,6 +883,1294 @@ type UpdatePwdRes struct {
 	Stat bool `json:"stat"`
 }
 ```
+#### logic
+```go
+// /internal/logic/system/system.go
+package system
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+	"zeal_be/internal/consts"
+	"zeal_be/internal/service"
+	"zeal_be/utility"
+
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/mojocn/base64Captcha"
+)
+
+type sSystem struct{}
+
+func init() {
+	service.RegisterSystem(New())
+}
+
+func New() service.ISystem {
+	return &sSystem{}
+}
+
+var (
+	driver = &base64Captcha.DriverString{
+		Height:          80,
+		Width:           240,
+		NoiseCount:      50,
+		ShowLineOptions: 20,
+		Length:          4,
+		Source:          "abcdefghjkmnpqrstuvwxyz23456789",
+		Fonts:           []string{"chromohv.ttf"},
+	}
+	store = base64Captcha.DefaultMemStore
+)
+
+// 获取图形验证码
+func (s *sSystem) GetVerifyImgString(ctx context.Context) (idKeyC string, base64stringC string, err error) {
+	driver := driver.ConvertFonts()
+	c := base64Captcha.NewCaptcha(driver, store)
+	idKeyC, base64stringC, err = c.Generate()
+	return
+}
+
+// 图形验证码验证
+func (s *sSystem) VerifyCaptcha(ctx context.Context, idKey, captcha string) bool {
+	return store.Verify(idKey, captcha, true)
+}
+
+// 登录功能
+func (s *sSystem) Login(ctx context.Context, email string, password string) (stat int, tokenString string) {
+	md := g.Model("userdata").Safe()
+	exist, _ := md.Where("email_address", email).Exist()
+	if !exist {
+		return consts.UserNotExist, ""
+	}
+
+	ps, _ := md.Fields("password").Where("email_address", email).Value()
+	d_pass, _ := utility.Crypt.Decrypt(ps.String())
+	if ps.String() != password && password != d_pass {
+		return consts.UserFalsePassword, ""
+	} else if ps.String() == password {
+		e_pass, _ := utility.Crypt.Encrypt(password)
+		md.Where("email_address", email).Update(g.Map{"password": e_pass})
+	}
+
+	s.UpdateIPAddress(ctx, email)
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"email":    email,
+		"clientIP": g.RequestFromCtx(ctx).GetClientIp(),
+		"exp":      time.Now().Add(time.Hour * 6).Unix(),
+	})
+
+	jwt_key, _ := g.Cfg().Get(ctx, "jwt-secret")
+	tokenString, _ = token.SignedString([]byte(jwt_key.String()))
+	return 0, tokenString
+}
+
+func (s *sSystem) UpdateIPAddress(ctx context.Context, email string) {
+	md := g.Model("userdata").Safe()
+	ip_address_json := struct {
+		Ip_address string `json:"ip_address"`
+	}{}
+	md.Where("email_address", email).Fields("ip_address").Scan(&ip_address_json)
+	ip_address := []string{}
+	json.Unmarshal([]byte(ip_address_json.Ip_address), &ip_address)
+	curr_ip := g.RequestFromCtx(ctx).GetClientIp()
+	for i, v := range ip_address {
+		if v == curr_ip {
+			last_index := len(ip_address) - 1
+			temp_ip := ip_address[last_index]
+			ip_address[last_index] = curr_ip
+			ip_address[i] = temp_ip
+			save_ip, _ := json.Marshal(ip_address)
+			md.Where("email_address", email).Data("ip_address", nil).Update()
+			md.Where("email_address", email).Data("ip_address", save_ip).Update()
+			return
+		}
+	}
+	ip_address = append(ip_address, curr_ip)
+	if len(ip_address) > 3 {
+		ip_address = ip_address[len(ip_address)-3:]
+	}
+	save_ip, _ := json.Marshal(ip_address)
+	md.Where("email_address", email).Data("ip_address", save_ip).Update()
+}
+
+// 注册
+func (s *sSystem) Register(ctx context.Context, username string, email string, password string) int {
+	md := g.Model("userdata").Safe()
+	exist, _ := md.Where("email_address", email).Exist()
+	if exist {
+		return consts.UserAlreadyExist
+	}
+	password, _ = utility.Crypt.Encrypt(password)
+	data := g.Map{
+		"user_name":     username,
+		"email_address": email,
+		"password":      password,
+	}
+	md.Insert(data)
+	userID, _ := md.Where("email_address", email).Fields("user_id").Value()
+	g.Model("userprivilege").Safe().Insert(g.Map{
+		"user_id":       userID.Int(),
+		"email_address": email,
+		"privilege":     []string{"stack"},
+	})
+	return 0
+}
+
+func (s *sSystem) UpdatePwd(ctx context.Context, email string, password string) int {
+	md := g.Model("userdata").Safe()
+	exist, _ := md.Where("email_address", email).Exist()
+	if !exist {
+		return consts.UserNotExist
+	}
+	md.Where("email_address", email).Data("password", password).Update()
+	return 0
+}
+```
+```go
+// email_code.go
+package system
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"strings"
+	"zeal_be/utility"
+
+	"github.com/gogf/gf/v2/frame/g"
+	"gopkg.in/gomail.v2"
+)
+
+// 发送验证码
+func (s *sSystem) EmailCodeSend(ctx context.Context, to string) (send bool, ttl int64) {
+	code := utility.GenerateVerificationCode(6)
+	key := "verification_code:" + to
+	value, _ := g.Redis().Get(ctx, key)
+	if !value.IsNil() {
+		utility.Clog("code", value.String())
+		ttl, _ = g.Redis().TTL(ctx, key)
+		return true, ttl
+	}
+
+	smtpHost := g.Cfg().MustGet(ctx, "smtp.host").String()
+	smtpPort := g.Cfg().MustGet(ctx, "smtp.port").Int()
+	senderEmail := g.Cfg().MustGet(ctx, "smtp.email").String()
+	senderPassword := g.Cfg().MustGet(ctx, "smtp.password").String()
+
+	htmlBody := fmt.Sprintf(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>您的 TechStack 验证码</title>
+		<style>
+			body { font-family: Arial, sans-serif; background-color: #1b2838; color: #ffffff; text-align: center; padding: 20px; }
+			.container { max-width: 500px; margin: 0 auto; background-color: #2a475e; padding: 20px; border-radius: 10px; }
+			.header { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+			.code { font-size: 32px; font-weight: bold; color: #66c0f4; margin: 20px 0; }
+			.footer { font-size: 14px; color: #bbbbbb; margin-top: 20px; }
+			.signature { font-size: 14px; color: #bbbbbb; margin-top: 30px; border-top: 1px solid #444; padding-top: 10px; }
+			.signature a { color: #66c0f4; text-decoration: none; }
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<div class="header">您的 TechStack 验证码</div>
+			<p>请使用以下验证码完成验证：</p>
+			<div class="code">%s</div>
+			<p>请在 <strong>5 分钟</strong> 内使用，否则验证码将失效。</p>
+			<div class="footer">如果您未请求此验证码，请忽略此邮件。</div>
+			<div class="signature">
+				<hr>
+				<p>
+					由 <strong>TechStack</strong> 提供支持<br>
+					官网: <a href="http://113.45.183.72/">Tech-Stack</a><br>
+					邮箱: <a href="mailto:dearqueenszeal@163.com">dearqueenszeal@163.com</a>
+				</p>
+			</div>
+		</div>
+	</body>
+	</html>
+	`, code)
+
+	m := gomail.NewMessage()
+
+	m.SetHeader("From", senderEmail)
+	m.SetHeader("To", to)
+	m.SetHeader("Subject", "您的 TechStack 验证码")
+	m.SetBody("text/html", htmlBody)
+
+	// 配置 SMTP 服务器（使用 SSL）
+	d := gomail.NewDialer(smtpHost, smtpPort, senderEmail, senderPassword)
+	d.TLSConfig = &tls.Config{InsecureSkipVerify: true} // 解决可能的证书问题
+	utility.Clog("code", code)
+	err := d.DialAndSend(m)
+	if err != nil {
+		utility.Clog(err)
+		return false, 0
+	}
+
+	g.Redis().SetEX(ctx, key, code, 60*5)
+	return true, 60 * 5
+}
+
+// 验证
+func (s *sSystem) EmailCodeVerify(ctx context.Context, to string, code string) bool {
+	key := "verification_code:" + to
+	value, _ := g.Redis().Get(ctx, key)
+	if value.IsNil() {
+		return false
+	}
+	return strings.EqualFold(value.String(), code)
+}
+
+func (s *sSystem) EmailCodeSend2(ctx context.Context, to string) (send bool, ttl int64) {
+	code := utility.GenerateVerificationCode(6)
+	key := "verification_code:" + to
+	value, _ := g.Redis().Get(ctx, key)
+	if !value.IsNil() {
+		utility.Clog("code", value.String())
+		ttl, _ = g.Redis().TTL(ctx, key)
+		return true, ttl
+	}
+	utility.Clog("code", code)
+	g.Redis().SetEX(ctx, key, code, 60*5)
+	return true, 60 * 5
+}
+```
+#### controller
+```go
+// GetAuthCode
+	idKeyC, base64stringC, err := service.System().GetVerifyImgString(ctx)
+	if err != nil {
+		utility.Clog("\n获取验证码失败", err)
+		return nil, err
+	}
+	res = new(v1.AuthCodeGetRes)
+	res.Key = idKeyC
+	res.Img = base64stringC
+	return
+```
+
+```go
+// GetEmailCode
+	res = new(v1.EmailCodeGetRes)
+	res.Send, res.TTL = service.System().EmailCodeSend2(ctx, req.ToEmail)
+	return
+```
+```go
+// Login
+	r := g.RequestFromCtx(ctx)
+	res = new(v1.LoginRes)
+	stat, token := service.System().Login(ctx, req.Email, req.Password)
+	if stat == consts.UserNotExist {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "用户不存在"})
+	} else if stat == consts.UserFalsePassword {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "密码错误"})
+	}
+	res.Token = token
+	return
+```
+```go
+// Register
+	verify_stat := service.System().EmailCodeVerify(ctx, req.Email, req.EmailCode)
+	r := g.RequestFromCtx(ctx)
+	if !verify_stat {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "验证码错误"})
+	}
+	register_stat := service.System().Register(ctx, req.NickName, req.Email, req.Password)
+	if register_stat == consts.UserAlreadyExist {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "邮箱已注册"})
+	}
+	res = new(v1.RegisterRes)
+	res.Stat = true
+	return
+```
+```go
+// UpdatePwd
+	r := g.RequestFromCtx(ctx)
+	verify_stat := service.System().EmailCodeVerify(ctx, req.Email, req.VerifyCode)
+	if !verify_stat {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "验证码错误"})
+	}
+	exist_stat := service.System().UpdatePwd(ctx, req.Email, req.NewPwd)
+	if exist_stat == consts.UserNotExist {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "用户不存在"})
+	}
+	res = &v1.SysUpdatePwdRes{}
+	res.Stat = true
+	return
+```
+### user
+```sh
+zeal_be/api/user/v1/
+├── get_email_code.go
+├── get_anniversary.go
+├── get_avatar.go
+├── get_self_info.go
+├── get_stack.go
+├── set_anniversary.go
+├── sign_out.go
+├── update_avatar.go
+├── update_password.go
+└── update_stack.go
+```
+```go
+// get_email_code.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetEmailCodeReq struct {
+	g.Meta `path:"/user/get_email_code" method:"get"`
+}
+
+type GetEmailCodeRes struct {
+	TTL  int64 `json:"ttl"` // 验证码有效时间，单位秒
+	Send bool  `json:"send"`
+}
+```
+
+```go
+// get_anniversary.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetAnniversaryReq struct {
+	g.Meta `path:"/user/get_anniversary" method:"get"`
+}
+
+type GetAnniversaryRes struct {
+	Day_name  string `json:"day_name"`
+	Day_value string `json:"day_value"`
+}
+```
+
+```go
+// get_avatar.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetAvatarReq struct {
+	g.Meta `path:"/user/get_avatar" method:"get"`
+}
+
+type GetAvatarRes struct {
+	Filepath string `json:"avatar_url"`
+}
+```
+```go
+// get_self_info.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetSelfInfoReq struct {
+	g.Meta `path:"/user/get_self_info" method:"get"`
+}
+
+type GetSelfInfoRes struct {
+	Info SelfInfo `json:"self_info"`
+}
+
+type SelfInfo struct {
+	User_name       string `json:"user_name"`
+	Email_address   string `json:"email_address"`
+	Created_time    string `json:"created_time"`
+	Last_login_time string `json:"last_login_time"`
+	Avatar_url      string `json:"avatar_url"`
+}
+```
+
+```go
+// get_stack.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type UserGetStackReq struct {
+	g.Meta `path:"/user/get_stack" method:"get"`
+}
+
+type UserGetStackRes struct {
+	Stack_text string `json:"stack_text"`
+	Update_at  string `json:"update_at"`
+}
+```
+```go
+// set_anniversary.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type SetAnniversaryReq struct {
+	g.Meta    `path:"/user/set_anniversary" method:"post"`
+	Day_name  string `p:"day_name"`
+	Day_value string `p:"day_value"`
+}
+
+type SetAnniversaryRes struct{
+	Stat bool `json:"stat"`
+}
+```
+```go
+// sign_out.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type SignOutReq struct {
+	g.Meta `path:"/user/sign_out" method:"get"`
+}
+
+type SignOutRes struct{}
+```
+```go
+// update_avatar.go
+package v1
+
+import (
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/net/ghttp"
+)
+
+type UpateAvatarReq struct {
+	g.Meta `path:"/user/upload_avatar" method:"post" mime:"multipart/form-data"`
+	File   *ghttp.UploadFile `p:"ufile" type:"file"`
+}
+
+type UpateAvatarRes struct {
+	Avatar_url string `json:"avatar_url"`
+}
+```
+```go
+// update_password.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type UserUpdatePwdReq struct {
+	g.Meta     `path:"/user_update_pwd" method:"post"`
+	Verify_code string `p:"verify_code"`
+	NewPwd     string `p:"new_pwd"`
+}
+
+type UserUpdatePwdRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+```go
+// update_stack.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type UserUpdateStackReq struct {
+	g.Meta    `path:"/user/update_stack" method:"post"`
+	Stack_text string `p:"stack_text"`
+}
+
+type UserUpdateStackRes struct {
+	Stat     bool   `json:"stat"`
+	Update_at string `json:"update_at"`
+}
+```
+
+#### logic
+```go
+package user
+
+import (
+	"context"
+	v1 "zeal_be/api/user/v1"
+	"zeal_be/internal/service"
+	"zeal_be/utility"
+
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/net/ghttp"
+)
+
+type sUser struct{}
+
+func init() {
+	service.RegisterUser(New())
+}
+
+func New() service.IUser {
+	return &sUser{}
+}
+
+func (s *sUser) UpateAvatar(ctx context.Context, file *ghttp.UploadFile) (filepath string) {
+	md := g.Model("userdata").Safe()
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	avatar_path := "resource/public/upload/" + user_email + "/" + "avatar"
+	file.Filename = "avatar.jpg"
+	utility.ClearDir(avatar_path)
+	file.Save(avatar_path)
+	filepath = avatar_path + "/" + file.Filename
+	md.Where("email_address", user_email).Update(g.Map{"avatar_url": filepath})
+	filepath = g.Cfg().MustGet(ctx, "base_url").String() + filepath
+	return
+}
+
+func (s *sUser) GetAvatar(ctx context.Context) (avatar string) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	avatar_url, _ := g.Model("userdata").Safe().Where("email_address", user_email).Fields("avatar_url").Value()
+	if len(avatar_url.String()) == 0 {
+		return
+	}
+	return g.Cfg().MustGet(ctx, "base_url").String() + avatar_url.String()
+}
+
+func (s *sUser) SetAnniversary(ctx context.Context, day_name string, day_value string) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	g.Model("userdata").Safe().Where("email_address", user_email).Update(g.Map{"day_name": day_name, "day_value": day_value})
+}
+
+func (s *sUser) GetAnniversary(ctx context.Context) (day_name string, day_value string) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	var Data = struct {
+		Day_name  string
+		Day_value string
+	}{}
+	g.Model("userdata").Safe().Where("email_address", user_email).Fields("day_name", "day_value").Scan(&Data)
+	return Data.Day_name, Data.Day_value
+}
+
+func (s *sUser) GetSelfInfo(ctx context.Context) (infoData *v1.SelfInfo) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	g.Model("userdata").Safe().Where("email_address", user_email).Scan(&infoData)
+	if len(infoData.Avatar_url) != 0 {
+		infoData.Avatar_url = g.Cfg().MustGet(ctx, "base_url").String() + infoData.Avatar_url
+	}
+	return
+}
+
+type StackData struct {
+	UserEmail string `bson:"user_email,omitempty"`
+	UpdatedAt string `bson:"updated_at,omitempty"` // Last update timestamp
+	StackText string `bson:"stack_text,omitempty"`
+}
+
+func (s *sUser) UpdateStackText(ctx context.Context, stacktext string) (stat bool, update_at string) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("user")
+	opts := options.Update().SetUpsert(true)
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	const layout = "2006年1月2日 15:04"
+	update_at = time.Now().Format(layout)
+	update := bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: "user_email", Value: user_email},
+			{Key: "updated_at", Value: update_at},
+			{Key: "stack_text", Value: stacktext},
+		}},
+		{Key: "$setOnInsert", Value: bson.D{
+			{Key: "created_at", Value: update_at},
+		}},
+	}
+	_, err := collection.UpdateOne(ctx, filter, update, opts)
+	if err != nil {
+		utility.Clog("err", err)
+		stat = false
+		return
+	}
+	stat = true
+	return
+}
+
+func (s *sUser) GetStackText(ctx context.Context) (stacktext string, update_at string) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("user")
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	userdate := &StackData{}
+	err := collection.FindOne(ctx, filter).Decode(&userdate)
+	if err != nil {
+		utility.Clog("err", err)
+		return "# no_userdata", ""
+	}
+	// utility.Clog(userdate.UpdatedAt)
+	return userdate.StackText, userdate.UpdatedAt
+}
+```
+
+#### controller
+```go
+// get_email_code.go
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	res = &v1.EmailCodeGetRes{}
+	res.Send, res.TTL = service.System().EmailCodeSend2(ctx, user_email)
+	return
+```
+
+```go
+// get_anniversary.go
+	res = &v1.GetAnniversaryRes{}
+	res.Day_name, res.Day_value = service.User().GetAnniversary(ctx)
+	return
+```
+
+```go
+// get_avatar.go
+	res = &v1.GetAvatarRes{}
+	res.Filepath = service.User().GetAvatar(ctx)
+	return
+```
+
+```go
+// get_self_info.go
+	res = &v1.GetSelfInfoRes{}
+	res.Info = *service.User().GetSelfInfo(ctx)
+	return
+```
+
+```go
+// set_anniversary.go
+	service.User().SetAnniversary(ctx, req.Day_name, req.Day_value)
+	return
+```
+
+```go
+// sign_out.go
+	res = &v1.SignOutRes{}
+	return
+```
+
+```go
+// upate_avatar.go
+	res = &v1.UpateAvatarRes{}
+	res.Filepath = service.User().UpateAvatar(ctx, req.File)
+	return
+```
+
+```go
+// get_stack.go
+	res = &v1.UserGetStackRes{}
+	res.StackText, res.UpdateAt = service.User().GetStackText(ctx)
+	return
+```
+
+```go
+// update_pwd.go
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	verify_stat := service.System().EmailCodeVerify(ctx, user_email, req.VerifyCode)
+	if !verify_stat {
+		r.Response.WriteJsonExit(g.Map{"code": 51, "msg": "验证码错误"})
+	}
+	service.System().UpdatePwd(ctx, user_email, req.NewPwd)
+	res = &v1.UserUpdatePwdRes{}
+	res.Stat = true
+	return
+```
+
+```go
+// update_stack.go
+	res = &v1.UserUpdateStackRes{}
+	res.Stat, res.UpdateAt = service.User().UpdateStackText(ctx, req.StackText)
+	return
+```
+### social
+```sh
+api/social/v1/
+├── follow.go
+├── get_follower_list.go
+├── get_following_list.go
+├── get_social_info.go
+├── not_follow.go
+└── search_id.go
+```
+```go
+// follow.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type FollowReq struct {
+	g.Meta     `path:"/social/follow" method:"post"`
+	User_id    int    `json:"user_id"`
+	User_name  string `json:"user_name"`
+	Nick_name  string `json:"nick_name"`
+	Avatar_url string `json:"avatar_url"`
+}
+
+type FollowRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+```go
+// get_follower_list.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type Userdata struct {
+	Username    string `bson:"user_name"`
+	UserId      int    `bson:"user_id"`
+	Nickname    string `bson:"nick_name"`
+	Avatar_url  string `bson:"avatar_url"`
+	IsFollowing bool   `json:"isFollowing"`
+	IsFollower  bool   `json:"isFollower"`
+}
+
+type GetFollowerListReq struct {
+	g.Meta    `path:"/social/get_follower_list" method:"post"`
+	PageSize  int  `p:"pageSize "`
+	Page      int  `p:"pageIndex"`
+	NeedCount bool `p:"needCount"`
+}
+
+type GetFollowerListRes struct {
+	UserList []Userdata `json:"user_list"`
+	Total    int        `json:"total"`
+}
+```
+
+```go
+// get_following_list.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetFollowingListReq struct {
+	g.Meta    `path:"/social/get_following_list" method:"post"`
+	PageSize  int  `p:"pageSize "`
+	Page      int  `p:"pageIndex"`
+	NeedCount bool `p:"needCount"`
+}
+
+type GetFollowingListRes struct {
+	UserList []Userdata `json:"user_list"`
+	Total    int        `json:"total"`
+}
+```
+
+```go
+// get_social_info.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetSocialInfoReq struct {
+	g.Meta `path:"/social/get_social_info" method:"get"`
+}
+
+type Social_info struct {
+	Doc_count int `json:"doc_count"`
+	Following int `json:"following"`
+	Followers int `json:"followers"`
+}
+
+type GetSocialInfoRes struct {
+	Social_info
+}
+```
+```go
+// not_follow.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type NotFollowReq struct {
+	g.Meta  `path:"/social/not_follow" method:"post"`
+	User_id int `json:"user_id"`
+}
+
+type NotFollowRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+```go
+// search_id.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type SearchIdReq struct {
+	g.Meta `path:"/social/search_id" method:"post"`
+	SearchReqInfo
+}
+
+type SearchReqInfo struct {
+	ID_desc   string `p:"id_desc"`
+	PageSize  int    `p:"pageSize "`
+	Page      int    `p:"pageIndex"`
+	NeedCount int    `p:"needCount"`
+}
+
+type SearchIdRes struct {
+	User_list []User_info `json:"user_list"`
+	Total     int         `json:"total"`
+}
+
+type User_info struct {
+	User_id       int    `json:"user_id"`
+	User_name     string `json:"user_name"`
+	Email_address string `json:"email_address"`
+	Avatar_url    string `json:"avatar_url"`
+	IsFollowing   bool   `json:"isFollowing"`
+	IsFollower    bool   `json:"isFollower"`
+}
+```
+#### logic
+```go
+// social.go
+package social
+
+import (
+	"context"
+	v1 "zeal_be/api/social/v1"
+	"zeal_be/internal/dao"
+	"zeal_be/internal/service"
+	"zeal_be/utility"
+
+	"github.com/gogf/gf/v2/frame/g"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type sSocial struct{}
+
+func init() {
+	service.RegisterSocial(New())
+}
+
+func New() service.ISocial {
+	return &sSocial{}
+}
+
+func (s *sSocial) SearchId(ctx context.Context, in v1.SearchReqInfo) (user_list []v1.User_info, total int) {
+	id_like := "%" + in.ID_desc + "%"
+	user_list = make([]v1.User_info, 0)
+
+	dao.Userdata.Ctx(ctx).Wheref(`user_name like ? or email_address=?`, id_like, in.ID_desc).
+		WhereNot("email_address", g.RequestFromCtx(ctx).GetCtxVar("Email").String()).
+		Page(in.Page, in.PageSize).
+		ScanAndCount(&user_list, &total, false)
+
+	for i := range user_list {
+		if len(user_list[i].Avatar_url) != 0 {
+			user_list[i].Avatar_url = g.Cfg().MustGet(ctx, "base_url").String() + user_list[i].Avatar_url
+		}
+		user_list[i].IsFollower = s.IsFollower(ctx, user_list[i].User_id)
+		user_list[i].IsFollowing = s.IsFollowing(ctx, user_list[i].User_id)
+	}
+	return
+}
+
+func (s *sSocial) IsFollowing(ctx context.Context, user_id int) bool {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{
+		{Key: "user_email", Value: user_email},
+		{Key: "following", Value: bson.D{{Key: "$elemMatch", Value: bson.D{{Key: "user_id", Value: user_id}}}}},
+	}
+	count, _ := collection.CountDocuments(ctx, filter)
+	return count > 0
+}
+
+func (s *sSocial) IsFollower(ctx context.Context, user_id int) bool {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{
+		{Key: "user_email", Value: user_email},
+		{Key: "followers", Value: bson.D{{Key: "$elemMatch", Value: bson.D{{Key: "user_id", Value: user_id}}}}},
+	}
+	count, _ := collection.CountDocuments(ctx, filter)
+	return count > 0
+}
+
+func (s *sSocial) IsInSocial(ctx context.Context) bool {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	count, _ := collection.CountDocuments(ctx, filter)
+	return count > 0
+}
+
+func (s *sSocial) CreateSocialAccount(ctx context.Context) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	user_data := &struct {
+		UserId          int    `json:"user_id"`
+		User_name       string `json:"user_name"`
+		Email_address   string `json:"email_address"`
+		Created_time    string `json:"created_time"`
+		Last_login_time string `json:"last_login_time"`
+	}{}
+	g.Model("userdata").Safe().Where("email_address", user_email).Scan(&user_data)
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	doc := bson.D{
+		{Key: "user_id", Value: user_data.UserId},
+		{Key: "user_email", Value: user_data.Email_address},
+		{Key: "user_name", Value: user_data.User_name},
+		{Key: "created_time", Value: user_data.Created_time},
+		{Key: "last_login_time", Value: user_data.Last_login_time},
+		{Key: "following", Value: []bson.D{}},
+		{Key: "followers", Value: []bson.D{}},
+	}
+	collection.InsertOne(ctx, doc)
+}
+
+func (s *sSocial) IsInSocialv2(ctx context.Context, user_id int) bool {
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{{Key: "user_id", Value: user_id}}
+	count, _ := collection.CountDocuments(ctx, filter)
+	return count > 0
+}
+
+func (s *sSocial) CreateSocialAccountV2(ctx context.Context, user_id int) {
+	user_data := &struct {
+		UserId          int    `json:"user_id"`
+		User_name       string `json:"user_name"`
+		Email_address   string `json:"email_address"`
+		Created_time    string `json:"created_time"`
+		Last_login_time string `json:"last_login_time"`
+	}{}
+	g.Model("userdata").Safe().Where("user_id", user_id).Scan(&user_data)
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	doc := bson.D{
+		{Key: "user_id", Value: user_data.UserId},
+		{Key: "user_email", Value: user_data.Email_address},
+		{Key: "user_name", Value: user_data.User_name},
+		{Key: "created_time", Value: user_data.Created_time},
+		{Key: "last_login_time", Value: user_data.Last_login_time},
+		{Key: "following", Value: []bson.D{}},
+		{Key: "followers", Value: []bson.D{}},
+	}
+	collection.InsertOne(ctx, doc)
+}
+
+func (s *sSocial) GetSocialInfo(ctx context.Context) (following, followers int) {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	// Aggregate pipeline to only get the length of the following and followers arrays
+	pipeline := bson.A{
+		bson.D{{Key: "$match", Value: bson.D{{Key: "user_email", Value: user_email}}}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "following_count", Value: bson.D{{Key: "$size", Value: "$following"}}},
+			{Key: "followers_count", Value: bson.D{{Key: "$size", Value: "$followers"}}},
+			{Key: "_id", Value: 0},
+		}}},
+	}
+
+	cur, err := collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, 0
+	}
+	defer cur.Close(ctx)
+
+	var result struct {
+		FollowingCount int `bson:"following_count"`
+		FollowersCount int `bson:"followers_count"`
+	}
+
+	if cur.Next(ctx) {
+		err = cur.Decode(&result)
+		if err != nil {
+			return 0, 0
+		}
+		return result.FollowingCount, result.FollowersCount
+	}
+
+	// If no document is found, return 0 for both counts
+	return 0, 0
+}
+
+func (s *sSocial) ToFollowing(ctx context.Context, user_id int, user_name string, nick_name string, avatar_url string) bool {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	user_data := &struct {
+		UserId     int    `json:"user_id"`
+		User_name  string `json:"user_name"`
+		Avatar_url string `json:"avatar_url"`
+	}{}
+
+	g.Model("userdata").Safe().Where("email_address", user_email).Scan(&user_data)
+
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	update := bson.D{
+		{Key: "$addToSet", Value: bson.D{
+			{Key: "following", Value: bson.D{
+				{Key: "user_id", Value: user_id},
+				{Key: "user_name", Value: user_name},
+				{Key: "nick_name", Value: nick_name},
+				{Key: "avatar_url", Value: avatar_url},
+			}},
+		}},
+	}
+	_, err := collection.UpdateOne(ctx, filter, update)
+
+	if err != nil {
+		return false
+	}
+
+	// Update the other user's followers list
+	if !s.IsInSocialv2(ctx, user_id) {
+		s.CreateSocialAccountV2(ctx, user_id)
+	}
+
+	filter2 := bson.D{{Key: "user_id", Value: user_id}}
+	update2 := bson.D{
+		{Key: "$addToSet", Value: bson.D{
+			{Key: "followers", Value: bson.D{
+				{Key: "user_id", Value: user_data.UserId},
+				{Key: "user_email", Value: user_email},
+				{Key: "user_name", Value: user_data.User_name},
+				{Key: "nick_name", Value: user_data.User_name},
+				{Key: "avatar_url", Value: user_data.Avatar_url},
+			}},
+		}},
+	}
+	_, err2 := collection.UpdateOne(ctx, filter2, update2)
+	return err2 == nil
+}
+
+func (s *sSocial) NotFollowing(ctx context.Context, user_id int) bool {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	update := bson.D{
+		{Key: "$pull", Value: bson.D{
+			{Key: "following", Value: bson.D{
+				{Key: "user_id", Value: user_id},
+			}},
+		}},
+	}
+	_, err := collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false
+	}
+	// Update the other user's followers list
+	filter2 := bson.D{{Key: "user_id", Value: user_id}}
+	update2 := bson.D{
+		{Key: "$pull", Value: bson.D{
+			{Key: "followers", Value: bson.D{
+				{Key: "user_email", Value: user_email},
+			}},
+		}},
+	}
+	_, err2 := collection.UpdateOne(ctx, filter2, update2)
+	return err2 == nil
+}
+
+func (s *sSocial) GetFollowerList(ctx context.Context, pageSize, pageIndex int) []v1.Userdata {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	skip := pageSize * (pageIndex - 1)
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	// utility.Clog(pageSize, pageIndex, skip)
+	projection := bson.D{
+		{Key: "followers", Value: bson.D{
+			{Key: "$slice", Value: bson.A{skip, pageSize}},
+		}},
+	}
+	var result struct {
+		Followers []v1.Userdata `bson:"followers"`
+	}
+	err := collection.FindOne(ctx, filter, options.FindOne().SetProjection(projection)).Decode(&result)
+	if err != nil {
+		// 处理错误，这可能是因为没有找到文档或解码失败
+		utility.Clog("Decode error:", err)
+		return nil
+	}
+
+	for i := range result.Followers {
+		result.Followers[i].IsFollowing = s.IsFollowing(ctx, result.Followers[i].UserId)
+		result.Followers[i].IsFollower = true
+		if len(result.Followers[i].Avatar_url) != 0 {
+			result.Followers[i].Avatar_url = g.Cfg().MustGet(ctx, "base_url").String() + result.Followers[i].Avatar_url
+		}
+	}
+	// utility.Clog(result)
+	return result.Followers
+}
+
+func (s *sSocial) GetFollowingList(ctx context.Context, pageSize, pageIndex int) []v1.Userdata {
+	r := g.RequestFromCtx(ctx)
+	user_email := r.GetCtxVar("Email").String()
+	mongoClient, _ := utility.NewMongoClient()
+	collection := mongoClient.Database("zeal").Collection("social")
+	skip := pageSize * (pageIndex - 1)
+	filter := bson.D{{Key: "user_email", Value: user_email}}
+	projection := bson.D{
+		{Key: "following", Value: bson.D{
+			{Key: "$slice", Value: bson.A{skip, pageSize}},
+		}},
+	}
+	var result struct {
+		Following []v1.Userdata `bson:"following"`
+	}
+	collection.FindOne(ctx, filter, options.FindOne().SetProjection(projection)).Decode(&result)
+	for i := range result.Following {
+		result.Following[i].IsFollower = s.IsFollower(ctx, result.Following[i].UserId)
+		result.Following[i].IsFollowing = true
+		// result.Following[i].Avatar_url = g.Cfg().MustGet(ctx, "base_url").String() + result.Following[i].Avatar_url
+		// 因为关注列表的avatar_url是从前端返回的，所以这里不需要再次拼接base_url
+	}
+	// utility.Clog(result)
+	return result.Following
+}
+```
+#### controller
+```go
+// follow.go
+	res = &v1.FollowRes{}
+	res.Stat = service.Social().ToFollowing(ctx, req.User_id, req.User_name, req.Nick_name, req.Avatar_url)
+	return
+```
+
+```go
+// get_follower_list.go
+	res = &v1.GetFollowerListRes{}
+	res.UserList = service.Social().GetFollowerList(ctx, req.PageSize, req.Page)
+	if req.NeedCount {
+		_, res.Total = service.Social().GetSocialInfo(ctx)
+	}
+	return
+```
+
+```go
+// get_following_list.go
+	res = &v1.GetFollowingListRes{}
+	res.UserList = service.Social().GetFollowingList(ctx, req.PageSize, req.Page)
+	if req.NeedCount {
+		res.Total, _ = service.Social().GetSocialInfo(ctx)
+	}
+	return
+```
+
+```go
+// get_social_info.go
+	if !service.Social().IsInSocial(ctx) {
+		service.Social().CreateSocialAccount(ctx)
+	}
+	res = &v1.GetSocialInfoRes{}
+	res.Doc_count = service.Notebooks().GetBookCount(ctx)
+	res.Following, res.Followers = service.Social().GetSocialInfo(ctx)
+	return
+```
+
+```go
+// not_follow.go
+	res = &v1.NotFollowRes{}
+	res.Stat = service.Social().NotFollowing(ctx, req.User_id)
+	return
+```
+
+```go
+// search_id.go
+	res = &v1.SearchIdRes{}
+	res.User_list, res.Total = service.Social().SearchId(ctx, req.SearchReqInfo)
+	return
+```
+### notebook
+```go
+// delete_content.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type DeleteContentReq struct {
+	g.Meta  `path:"/notebook/delete_content" method:"post"`
+	Title   string `p:"title"`
+	Chapter string `p:"chapter"`
+	Session string `p:"session"`
+	Item    string `p:"item"`
+}
+
+type DeleteContentRes struct {
+	Stat bool `json:"stat"`
+}
+```
+
+```go
+// get_content.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetContentReq struct {
+	g.Meta  `path:"/notebook/get_content" method:"post"`
+	Title   string `p:"title"`
+	Chapter string `p:"chapter"`
+	Session string `p:"session"`
+}
+
+type GetContentRes struct {
+	Content string `json:"content"`
+}
+```
+
+```go
+//get_directory.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type GetDirectoryReq struct {
+	g.Meta `path:"/notebook/get_directory" method:"post"`
+	Title  string `p:"title"`
+}
+
+type GetDirectoryRes struct {
+	Directories []Directory `json:"directories"`
+}
+```
+
+```go
+// set_content.go
+package v1
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type SetContentReq struct {
+	g.Meta  `path:"/notebook/set_content" method:"post"`
+	Title   string `p:"title"`
+	Chapter string `p:"chapter"`
+	Session string `p:"session"`
+	Content string `p:"content"`
+}
+
+type SetContentRes struct {
+	Stat bool `json:"stat"`
+}
+```
 
 ## consts
 ```go
@@ -1037,3 +2325,20 @@ func GetInstance() *Singleton {
 
 
 
+# 日历代办事项项目开发
+
+1. **需求收集**：
+   1. 布局类
+      - 得有一个大的日历页面，可以显示一个月的日历。点击可以在右侧显示当日安排的详细信息。
+      - 日历页面有每日计划的前几条
+      - 可查看当日时间轴
+      - 可切换为日、周、天进行查看
+   2. 功能类
+      - 得在手机上可以查看 <span style="color:red;">说明得做好媒体响应设计</span>
+      - 纪念日设置、定时邮件提醒、展示最近的下个纪念日及日期倒数、展示所有纪念日、备注
+      - 任务填写可设置重要性等级、时间段(可以忽略)、任务描述、任务状态（待办、进行中、已完成）。
+      - 任务可以设置为重复任务（如每周一的任务）。设置方式为首先设置日期跨度，设置重复频率，月（每月几号）、周（每周几）、日（每天），均可设置小时段。
+      - 可设置任务类别、数量统计
+    3. 系统类
+       - 登录前的主页设计：得有简要动画
+       - 登录后的个人中心设计，登录后不展示介绍主页，直接进入个人中心，但保留更多信息页
